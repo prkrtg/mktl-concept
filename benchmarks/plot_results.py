@@ -44,7 +44,7 @@ plt.close()
 df_valid = df_all[df_all["rtt"].notnull() & (df_all["rtt"] > 0)]
 plt.figure()
 try:
-    sns.histplot(df_valid, x="rtt", hue="role", bins=50, kde=False)
+    sns.histplot(df_valid, x="rtt", hue="role", bins=50, stat="density", common_norm=False)
     plt.title("Latency Distribution by Role")
     plt.xlabel("RTT (s)")
     plt.tight_layout()
@@ -58,7 +58,8 @@ df_all["second"] = df_all["timestamp"].dt.floor("S")
 msgs_per_sec = df_all.groupby("second").size().reset_index(name="message_count")
 
 plt.figure()
-sns.lineplot(data=msgs_per_sec, x="second", y="message_count")
+msgs_per_sec["normalized"] = msgs_per_sec["message_count"] / msgs_per_sec["message_count"].max()
+sns.lineplot(data=msgs_per_sec, x="second", y="normalized")
 plt.title("Messages Per Second (All Events)")
 plt.xlabel("Time")
 plt.ylabel("Message Count")
