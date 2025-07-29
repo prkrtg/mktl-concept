@@ -5,29 +5,35 @@ import os
 import sys
 import signal
 from datetime import datetime
-from multiprocessing import Process
+from peer_node import PeerNode, setup_zyre_node  # Import setup_zyre_node here
 
 peer_processes = []
 should_terminate = multiprocessing.Event()
 
 
-def launch_peer_process(peer_id, group, shout_rate, whisper_rate, log_dir):
-    """Target function to run peer_node.py as a Python subprocess."""
-    cmd = [
-        sys.executable, "peer_node.py",
-        "--id", f"peer-{peer_id}",
-        "--group", group,
-        "--shout-rate", str(shout_rate),
-        "--whisper-rate", str(whisper_rate),
-        "--log-dir", log_dir
-    ]
-    os.execv(sys.executable, cmd)  # Replaces current process with peer_node
+def launch_peer_process(peer_id, group, shout_rate, whisper_rate, log_dir, role="low"):
+    """Target function to run PeerNode and pass the node object."""
+    # Setup the Zyre node
+    node = setup_zyre_node(name=f"peer-{peer_id}".encode(), group=group.encode())
+
+    # Now create the PeerNode with the setup node
+    peer_node = PeerNode(
+        peer_id=f"peer-{peer_id}",
+        group=group,
+        shout_rate=shout_rate,
+        whisper_rate=whisper_rate,
+        log_dir=log_dir,
+        role=role
+    )
+
+    peer_node.run(node)  # Pass the node object to the run() method
 
 
-def start_peer(peer_id, group, shout_rate, whisper_rate, log_dir):
-    p = Process(
+def start_peer(peer_id, group, shout_rate, whisper_rate, log_dir, role="low"):
+    """Start PeerNode in a separate process."""
+    p = multiprocessing.Process(
         target=launch_peer_process,
-        args=(peer_id, group, shout_rate, whisper_rate, log_dir),
+        args=(peer_id, group, shout_rate, whisper_rate, log_dir, role),  # Include role in args
         daemon=False
     )
     p.start()
@@ -45,17 +51,17 @@ def terminate_all():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Zyre Stress Test Launcher (multiprocessing version)")
+    parser = argparse.ArgumentParser(description="Zyre Stress Test Launcher")
     parser.add_argument("--max-peers", type=int, default=100)
     parser.add_argument("--interval", type=float, default=0.2)
     parser.add_argument("--shout-rate", type=float, default=1.0)
     parser.add_argument("--whisper-rate", type=float, default=1.5)
     parser.add_argument("--group", type=str, default="bench")
     parser.add_argument("--log-dir", type=str, default="logs")
+    parser.add_argument("--role", choices=["low", "medium", "high", "hungry"], default="low")  # Default role added
     args = parser.parse_args()
 
     os.makedirs(args.log_dir, exist_ok=True)
-    os.makedirs("logs", exist_ok=True)
     logfile = open("logs/launcher.log", "a")
 
     def log(msg):
@@ -65,22 +71,25 @@ def main():
 
     def handle_sigint(sig, frame):
         should_terminate.set()
-        terminate_all()
+        log("Interrupt received. Terminating peers...")
+        for proc in peer_processes:
+            if proc.is_alive():
+                proc.terminate()
+        for proc in peer_processes:
+            proc.join()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, handle_sigint)
 
-    log(f"[launcher] Starting stress test with {args.max_peers} peers")
-
     for i in range(args.max_peers):
         if should_terminate.is_set():
             break
-        proc = start_peer(i, args.group, args.shout_rate, args.whisper_rate, args.log_dir)
+        proc = start_peer(i, args.group, args.shout_rate, args.whisper_rate, args.log_dir, args.role)
         peer_processes.append(proc)
-        log(f"[launcher] Started peer-{i}")
+        log(f"Started peer-{i}")
         time.sleep(args.interval)
 
-    log("[launcher] All peers launched. Press Ctrl+C to stop.")
+    log("All peers launched. Press Ctrl+C to stop.")
     for proc in peer_processes:
         proc.join()
 
