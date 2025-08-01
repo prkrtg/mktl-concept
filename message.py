@@ -7,7 +7,6 @@ import json
 # Only transport modes Zyre supports for sending
 VALID_TYPES = {"whisper", "shout"}
 
-
 @dataclass(frozen=True)
 class Message:
     coms: "MessageComs"                     # Communication context (e.g. Zyre wrapper)
@@ -52,11 +51,6 @@ class Message:
             destination=destination,
             received_by=received_by
         )
-
-from typing import Optional
-import uuid
-from message import Message, VALID_TYPES  # Assumes Message and VALID_TYPES are defined in message.py
-
 
 class MessageBuilder:
     def __init__(self, coms: "MessageComs"):
