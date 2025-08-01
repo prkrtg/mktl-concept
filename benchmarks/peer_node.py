@@ -55,7 +55,7 @@ class PeerNode:
         self.shout_rate = shout_rate
         self.whisper_rate = whisper_rate
         self.log_dir = log_dir
-        self.role = role or random.choice(["low", "medium", "high", "hungry"])
+        self.role = random.choice(["low", "medium", "high", "hungry"])
 
         # Queue for communication between processes
         self.queue = Queue()
@@ -67,7 +67,7 @@ class PeerNode:
         logging.basicConfig(
             level=logging.INFO,
             format="%(asctime)s [%(name)s] %(message)s",
-            handlers=[logging.FileHandler(self.log_path_txt), logging.StreamHandler()]
+            handlers=[logging.FileHandler(self.log_path_txt)]
         )
         self.logger = logging.getLogger(self.peer_id)
         self.logger.info(f"Starting with role: {self.role}")

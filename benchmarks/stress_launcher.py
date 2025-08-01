@@ -5,14 +5,18 @@ import os
 import sys
 import signal
 from datetime import datetime
-from peer_node import PeerNode, setup_zyre_node  # Import setup_zyre_node here
+from peer_node import PeerNode, setup_zyre_node
+import random
 
 peer_processes = []
 should_terminate = multiprocessing.Event()
 
 
-def launch_peer_process(peer_id, group, shout_rate, whisper_rate, log_dir, role="low"):
+def launch_peer_process(peer_id, group, shout_rate, whisper_rate, log_dir, role=None):
     """Target function to run PeerNode and pass the node object."""
+    if role is None:
+        role = random.choice(["low", "medium", "high", "hungry"])
+
     # Setup the Zyre node
     node = setup_zyre_node(name=f"peer-{peer_id}".encode(), group=group.encode())
 
@@ -26,8 +30,7 @@ def launch_peer_process(peer_id, group, shout_rate, whisper_rate, log_dir, role=
         role=role
     )
 
-    peer_node.run(node)  # Pass the node object to the run() method
-
+    peer_node.run(node)
 
 def start_peer(peer_id, group, shout_rate, whisper_rate, log_dir, role="low"):
     """Start PeerNode in a separate process."""
