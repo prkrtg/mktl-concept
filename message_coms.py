@@ -1,13 +1,12 @@
 import ctypes
 import threading
 import queue
-import uuid
 from typing import Callable, Dict, Optional
 
-from zyre import Zyre, czmq
-from message import Message, VALID_TYPES
+from zyre import Zyre, czmq, ZyreEvent
+from message import Message, VALID_TYPES, MessageBuilder
 
-# Load CZMQ library for manual zmsg construction
+# Load CZMQ Library
 libczmq = ctypes.CDLL("libczmq.dylib")
 libczmq.zmsg_new.restype = ctypes.c_void_p
 libczmq.zmsg_addmem.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t]
@@ -18,11 +17,9 @@ def build_zmsg(payload: bytes, blob: Optional[bytes] = None) -> czmq.zmsg_p:
     raw_ptr = libczmq.zmsg_new()
     if not raw_ptr:
         raise RuntimeError("Failed to create zmsg")
-
     libczmq.zmsg_addmem(raw_ptr, ctypes.c_char_p(payload), len(payload))
     if blob:
         libczmq.zmsg_addmem(raw_ptr, ctypes.c_char_p(blob), len(blob))
-
     return ctypes.cast(raw_ptr, czmq.zmsg_p)
 
 
@@ -36,6 +33,7 @@ class MessageComs:
         if verbose:
             self.node.set_verbose()
         self.node.start()
+
         self.uuid = self.node.uuid().decode()
         self.group = group
         if group:
@@ -49,6 +47,9 @@ class MessageComs:
             for _ in range(workers)
         ]
         self._running = False
+        self.handlers = {}
+        self.responded_to: set[str] = set()
+        self._peer_keys = {}  # Maps peer_id → list of keys they support
 
     def register_handler(self, key: str, handler: Callable[[Message], None]):
         self.handlers[key] = handler
@@ -71,34 +72,42 @@ class MessageComs:
         else:
             raise ValueError(f"Unsupported msg_type: {msg.msg_type}")
 
-    def _send_keys(self, target_uuid: Optional[bytes] = None):
-        """Send each known key to the target peer (WHISPER) or group (SHOUT)."""
-        for key in self.handlers:
-            msg = Message(
-                coms=self,
-                sender_id=self.uuid,
-                msg_type="whisper" if target_uuid else "shout",
-                req_id=str(uuid.uuid4()),
-                key=key,
-                json_data={"announce": "key"},
-                destination=target_uuid,
-            )
-            print(f"[MessageComs] Sending {msg.msg_type.upper()} for key '{key}' to {target_uuid or 'GROUP'}")
-            self.send(msg)
-
     def _recv_loop(self):
+        print("[MessageComs] Starting receive loop...")
         while self._running:
-            event = self.node.recv()
-            if not hasattr(event, "type"):
+            event = ZyreEvent(self.node)
+            if not event:
                 continue
 
             ev_type = event.type()
+            if isinstance(ev_type, bytes):
+                ev_type = ev_type.decode()
+
+            print(f"[MessageComs] Received event: {ev_type}")
+            peer_id = event.peer_uuid().decode()
+
+            # Handle peer entry
             if ev_type == "ENTER":
-                peer_uuid_bytes = event.peer_uuid()
-                print(f"[MessageComs] ENTER from peer: {peer_uuid_bytes.decode()}")
-                self._send_keys(target_uuid=peer_uuid_bytes)
+                print(f"[MessageComs] Peer ENTERED: {peer_id}, sending group SHOUT")
+
+                # Broadcast our keys to the group
+                msg = (
+                    MessageBuilder(self)
+                    .with_type("shout")
+                    .with_sender_id(self.uuid)
+                    .with_req_id("peer-join")
+                    .with_key("peer.keys")
+                    .with_json_data({
+                        "event": "peer_entered",
+                        "from": self.uuid,
+                        "keys": list(self.handlers.keys())
+                    })
+                    .build()
+                )
+                self.send(msg)
                 continue
 
+            # Ignore non-message events
             if ev_type not in ("WHISPER", "SHOUT"):
                 continue
 
@@ -107,16 +116,25 @@ class MessageComs:
                 continue
 
             try:
-                json_data = frames[0].decode()
-                blob = frames[1] if len(frames) > 1 else None
-                sender_id = event.peer_uuid().decode()
+                json_data = frames.popstr()
+                blob = frames.popmem() if frames.size() > 0 else None
+
                 msg = Message.from_json(
                     json_data,
                     coms=self,
                     blob=blob,
                     received_by=self.uuid.encode()
                 )
-                self.queue.put_nowait((msg, sender_id))
+
+                # Automatically track peer key registry
+                if msg.key == "peer.keys":
+                    keys = msg.json_data.get("keys", [])
+                    print(f"[MessageComs] Noted keys from {peer_id}: {keys}")
+                    self._peer_keys[peer_id] = keys
+
+                # Queue message for async consumer
+                self.queue.put_nowait((msg, peer_id))
+
             except Exception as e:
                 print(f"[MessageComs] Error parsing message: {e}")
 
@@ -124,25 +142,38 @@ class MessageComs:
         while self._running:
             try:
                 msg, sender = self.queue.get(timeout=1)
-                handler = self.handlers.get(msg.key)
-                if handler:
-                    handler(msg)
-                else:
-                    print(f"[MessageComs] No handler for message key: {msg.key}")
+
+                # Respond to key SHOUT/WHISPER
+                if msg.msg_type in {"shout", "whisper"} and msg.json_data.get("announce") == "key":
+                    if sender not in self.responded_to:
+                        print(f"[MessageComs] Received key SHOUT from {sender}, whispering back")
+                        self._send_keys(target_uuid=sender.encode())
+                        self.responded_to.add(sender)
+
             except queue.Empty:
                 continue
             except Exception as e:
                 print(f"[MessageComs] Handler error: {e}")
+
+    def _send_keys(self, target_uuid: Optional[bytes] = None):
+        msg = Message(
+            coms=self,
+            sender_id=self.uuid,
+            msg_type="whisper" if target_uuid else "shout",
+            req_id="keys",
+            key="key.announce",
+            json_data={"announce": "key"},
+            binary_blob=None,
+            destination=target_uuid.decode() if target_uuid else None,
+            received_by=None
+        )
+        self.send(msg)
 
     def start(self):
         self._running = True
         self._recv_thread.start()
         for thread in self._worker_threads:
             thread.start()
-
-        # SHOUT keys on startup after short delay
-        if self.handlers:
-            threading.Timer(1.0, self._send_keys).start()
 
     def stop(self):
         self._running = False
