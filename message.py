@@ -52,6 +52,31 @@ class Message:
             received_by=received_by
         )
 
+    @property
+    def is_request(self) -> bool:
+        return not self.key.endswith(".reply")
+
+    @property
+    def is_reply(self) -> bool:
+        return self.key.endswith(".reply")
+
+    def respond(self, data: dict):
+        if self.is_reply:
+            raise RuntimeError("Cannot respond to a reply message")
+
+        reply = MessageBuilder(self.coms) \
+            .with_type("whisper") \
+            .with_sender_id(self.coms.uuid) \
+            .with_req_id(str(uuid.uuid4())) \
+            .with_key(self.key + ".reply") \
+            .with_destination(self.sender_id.encode()) \
+            .with_json_data({"reply_to": self.req_id, **data}) \
+            .build()
+        self.coms.send(reply)
+
+    def fail(self, exc: Exception):
+        self.respond({"error": str(exc)})
+
 class MessageBuilder:
     def __init__(self, coms: "MessageComs"):
         self._coms = coms

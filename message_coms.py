@@ -5,6 +5,7 @@ from typing import Callable, Dict, Optional
 
 from zyre import Zyre, czmq, ZyreEvent
 from message import Message, VALID_TYPES, MessageBuilder
+from ctypes import c_char_p
 
 # Load CZMQ Library
 libczmq = ctypes.CDLL("libczmq.dylib")
@@ -61,7 +62,9 @@ class MessageComs:
         if msg.msg_type == "whisper":
             if not msg.destination:
                 raise ValueError("WHISPER requires a destination")
-            self.node.whisper(msg.destination, zmsg_ptr)
+            peer_id_bytes = msg.destination.encode() if isinstance(msg.destination, str) else msg.destination
+            peer_id = c_char_p(peer_id_bytes)
+            self.node.whisper(peer_id, zmsg_ptr)
 
         elif msg.msg_type == "shout":
             target_group = self.group
@@ -123,6 +126,7 @@ class MessageComs:
                     json_data,
                     coms=self,
                     blob=blob,
+                    destination=peer_id,
                     received_by=self.uuid.encode()
                 )
 
@@ -143,12 +147,24 @@ class MessageComs:
             try:
                 msg, sender = self.queue.get(timeout=1)
 
-                # Respond to key SHOUT/WHISPER
-                if msg.msg_type in {"shout", "whisper"} and msg.json_data.get("announce") == "key":
-                    if sender not in self.responded_to:
-                        print(f"[MessageComs] Received key SHOUT from {sender}, whispering back")
-                        self._send_keys(target_uuid=sender.encode())
-                        self.responded_to.add(sender)
+                # Handle request/reply
+                if msg.msg_type == "whisper":
+                    if msg.is_request:
+                        print(f"[MessageComs] Handling request {msg.req_id}")
+                        try:
+                            handler = self.handlers.get(msg.key)
+                            if handler:
+                                result = handler(msg, sender)
+                                if result is not None:
+                                    msg.respond(result)
+                            else:
+                                msg.fail(Exception("No handler for key"))
+                        except Exception as e:
+                            msg.fail(e)
+
+                    elif msg.is_reply:
+                        print(f"[MessageComs] Received reply to {msg.json_data.get('reply_to')}")
+                        pass
 
             except queue.Empty:
                 continue
