@@ -116,6 +116,7 @@ class PeerNode:
 
                 time.sleep(0.1)
         finally:
+            self.coms.stop()
             self.log_queue.put(None)
             self.log_thread.join()
             self.log_fp.close()
