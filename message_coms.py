@@ -25,7 +25,9 @@ def build_zmsg(payload: bytes, blob: Optional[bytes] = None) -> czmq.zmsg_p:
 
 
 def destroy_zmsg(zmsg_ptr: czmq.zmsg_p):
-    libczmq.zmsg_destroy(ctypes.byref(zmsg_ptr))
+    ptr = ctypes.cast(zmsg_ptr, ctypes.c_void_p)
+    ptr_p = ctypes.pointer(ptr)
+    libczmq.zmsg_destroy(ptr_p)
 
 
 class MessageComs:
@@ -65,12 +67,14 @@ class MessageComs:
             peer_id_bytes = msg.destination.encode() if isinstance(msg.destination, str) else msg.destination
             peer_id = c_char_p(peer_id_bytes)
             self.node.whisper(peer_id, zmsg_ptr)
+            destroy_zmsg(zmsg_ptr)
 
         elif msg.msg_type == "shout":
             target_group = self.group
             if not target_group:
                 raise ValueError("No group specified for SHOUT")
             self.node.shout(target_group.encode(), zmsg_ptr)
+            destroy_zmsg(zmsg_ptr)
 
         else:
             raise ValueError(f"Unsupported msg_type: {msg.msg_type}")
@@ -110,6 +114,11 @@ class MessageComs:
                 self.send(msg)
                 continue
 
+            if ev_type == "EXIT" or ev_type == "LEAVE":
+                print(f"[MessageComs] Peer LEFT: {peer_id}")
+                self._peer_keys.pop(peer_id, None)
+                continue
+
             # Ignore non-message events
             if ev_type not in ("WHISPER", "SHOUT"):
                 continue
@@ -129,6 +138,11 @@ class MessageComs:
                     destination=peer_id,
                     received_by=self.uuid.encode()
                 )
+                # Debug: print full message
+                # try:
+                #     print(f"[MessageComs] Parsed message from {peer_id}: {msg.to_json()}")
+                # except Exception:
+                #     print(f"[MessageComs] Parsed message from {peer_id}: {msg.__dict__}")
 
                 # Automatically track peer key registry
                 if msg.key == "peer.keys":
@@ -149,6 +163,9 @@ class MessageComs:
 
                 # Handle request/reply
                 if msg.msg_type == "whisper":
+                    if not msg.destination or msg.destination not in self._peer_keys:
+                        print(f"[WARN] Destination {msg.destination} not found, dropping message")
+                        return
                     if msg.is_request:
                         print(f"[MessageComs] Handling request {msg.req_id}")
                         try:

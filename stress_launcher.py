@@ -1,34 +1,31 @@
 import multiprocessing
-import subprocess
-import random
 import time
-import os
+from peer_node import PeerNode  # assuming local import, not subprocess
 
-ROLES = ["low", "medium", "high", "hungry"]
-NODES_PER_ROLE = 25
-TOTAL_NODES = NODES_PER_ROLE * len(ROLES)
 RUN_TIME_MINUTES = 30
+GROUP_NAME = "mktl-perf"
+ROLES = ["small", "medium", "large", "x-large"]
+PEERS_PER_ROLE = 25
 
 def launch_peer(index, role):
-    env = os.environ.copy()
-    cmd = ["python3", "peer_node.py", f"--name=node-{index}", f"--role={role}"]
-    subprocess.run(cmd, env=env)
+    node = PeerNode(
+        name=f"{role}-node-{index}",
+        group=GROUP_NAME,
+        role=role,
+        log_dir="logs"
+    )
+    node.run()
 
 if __name__ == "__main__":
-    print(f"[launcher] Launching {TOTAL_NODES} nodes...")
+    print(f"[launcher] Launching {PEERS_PER_ROLE * len(ROLES)} nodes...")
     processes = []
 
-    # Assign 25 nodes per role
-    roles_list = []
     for role in ROLES:
-        roles_list.extend([role] * NODES_PER_ROLE)
-    random.shuffle(roles_list)
-
-    for i in range(TOTAL_NODES):
-        p = multiprocessing.Process(target=launch_peer, args=(i, roles_list[i]))
-        p.start()
-        processes.append(p)
-        time.sleep(0.1)  # small stagger to reduce contention at startup
+        for i in range(PEERS_PER_ROLE):
+            p = multiprocessing.Process(target=launch_peer, args=(i, role))
+            p.start()
+            processes.append(p)
+            time.sleep(0.2)  # stagger to reduce startup contention
 
     print(f"[launcher] All nodes started. Running for {RUN_TIME_MINUTES} minutes...")
     try:
@@ -40,4 +37,5 @@ if __name__ == "__main__":
     for p in processes:
         p.terminate()
         p.join()
+
     print("[launcher] All nodes shut down.")

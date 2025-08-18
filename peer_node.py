@@ -69,21 +69,38 @@ class PeerNode:
             while time.time() - self.start_time < RUN_DURATION_SEC:
                 now = time.time()
 
-                # Periodic SHOUT with generic status
+                # Periodic SHOUT with role-dependent binary payload
                 if now - last_shout >= SHOUT_INTERVAL:
-                    msg = (
+                    payload_text = {"role": self.role, "timestamp": now}
+                    binary_blob = None
+
+                    if self.role == "small":
+                        payload_text["status"] = "hello"
+                    elif self.role == "medium":
+                        binary_blob = b"x" * (1 * 1024 * 1024)  # 1 MB
+                        payload_text["status"] = f"{len(binary_blob)}B payload"
+                    elif self.role == "large":
+                        binary_blob = b"x" * (10 * 1024 * 1024)  # 10 MB
+                        payload_text["status"] = f"{len(binary_blob)}B payload"
+                    elif self.role == "x-large":
+                        binary_blob = b"x" * (50 * 1024 * 1024)  # 50 MB
+                        payload_text["status"] = f"{len(binary_blob)}B payload"
+                    else:
+                        payload_text["status"] = "default-status"
+
+                    msg_builder = (
                         MessageBuilder(self.coms)
                         .with_type("shout")
                         .with_sender_id(self.coms.uuid)
                         .with_req_id(str(uuid.uuid4()))
                         .with_key("peer.status")
-                        .with_json_data({
-                            "status": "alive",
-                            "role": self.role,
-                            "timestamp": now,
-                        })
-                        .build()
+                        .with_json_data(payload_text)
                     )
+
+                    if binary_blob is not None:
+                        msg_builder = msg_builder.with_binary_blob(binary_blob)
+
+                    msg = msg_builder.build()
                     self.coms.send(msg)
                     last_shout = now
 
@@ -92,16 +109,35 @@ class PeerNode:
                 if now - last_whisper >= WHISPER_INTERVAL and known_peers:
                     peer = random.choice(known_peers)
                     sent_time = time.time()
-                    msg = (
+                    binary_blob = None
+                    json_payload = {"sent_time": sent_time}
+
+                    if self.role == "small":
+                        json_payload["ping"] = "hi"
+                    elif self.role == "medium":
+                        binary_blob = b"m" * (1 * 1024 * 1024)  # 1 MB
+                        json_payload["ping"] = f"{len(binary_blob)}B blob"
+                    elif self.role == "large":
+                        binary_blob = b"l" * (10 * 1024 * 1024)  # 10 MB
+                        json_payload["ping"] = f"{len(binary_blob)}B blob"
+                    elif self.role == "x-large":
+                        binary_blob = b"x" * (50 * 1024 * 1024)  # 50 MB
+                        json_payload["ping"] = f"{len(binary_blob)}B blob"
+
+                    msg_builder = (
                         MessageBuilder(self.coms)
                         .with_type("whisper")
                         .with_sender_id(self.coms.uuid)
                         .with_req_id(str(uuid.uuid4()))
                         .with_key("perf.echo")
                         .with_destination(peer)
-                        .with_json_data({"sent_time": sent_time})
-                        .build()
+                        .with_json_data(json_payload)
                     )
+
+                    if binary_blob:
+                        msg_builder = msg_builder.with_binary_blob(binary_blob)
+
+                    msg = msg_builder.build()
                     self.coms.send(msg)
                     self.log_queue.put({
                         "msg_id": msg.req_id,
@@ -116,6 +152,7 @@ class PeerNode:
 
                 time.sleep(0.1)
         finally:
+            self.coms.stop()
             self.log_queue.put(None)
             self.log_thread.join()
             self.log_fp.close()
